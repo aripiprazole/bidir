@@ -308,6 +308,7 @@ pub mod typing {
             use crate::ast::TypeRepr::*;
 
             match value {
+                Constr(constr) if constr.text == "Int" => Type::Constr(constr.text),
                 Constr(constr) => Type::Variable(constr.text),
                 Forall(name, type_repr) => Type::Forall(name.text, Box::new((*type_repr).into())),
                 Fun(domain, codomain) => {
