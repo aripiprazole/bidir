@@ -670,12 +670,16 @@ pub mod unification {
         type_repr: Type,
     ) -> Result<(), crate::error::TypeError> {
         match type_repr {
-            Type::Fun(_, _) => todo!(),
-            Type::Forall(_, _) => todo!(),
-            Type::Bound(_) => todo!(),
             Type::Hole(local_hole) if Rc::ptr_eq(&local_hole.value, &hole.value) => {
                 return Err(type_error!("occurs check: infinite type"));
             }
+            Type::Fun(domain, codomain) => {
+                pre_check_hole(ctx, hole.clone(), scope, *domain)?;
+                pre_check_hole(ctx, hole, scope, *codomain)?;
+            },
+            Type::Forall(_, type_repr) => {
+                pre_check_hole(ctx, hole, scope, *type_repr)?;
+            },
             Type::Hole(local_hole) => {
                 // Create a let binding, so we can use it later
                 let new_hole = local_hole.value.clone();
