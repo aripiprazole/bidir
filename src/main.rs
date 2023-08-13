@@ -1,3 +1,5 @@
+use ast::Expr;
+
 /// The abstract syntax tree definition for the programming language, that contains all
 /// possible expressions, types, etc..
 ///
@@ -400,7 +402,7 @@ pub mod debug {
         fn dbg_fmt(&self, p: bool, ctx: &Context, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             match self {
                 Type::Variable(name) => write!(f, "'{name}"),
-                Type::Constr(constr) => write!(f, "'{constr}"),
+                Type::Constr(constr) => write!(f, "{constr}"),
                 Type::Fun(a, b) => {
                     let a = a.debug_all(true, ctx); // Enable forced parenthesis
                     let b = b.debug_all(false, ctx); // Disable parenthesis
@@ -676,10 +678,10 @@ pub mod unification {
             Type::Fun(domain, codomain) => {
                 pre_check_hole(ctx, hole.clone(), scope, *domain)?;
                 pre_check_hole(ctx, hole, scope, *codomain)?;
-            },
+            }
             Type::Forall(_, type_repr) => {
                 pre_check_hole(ctx, hole, scope, *type_repr)?;
-            },
+            }
             Type::Hole(local_hole) => {
                 // Create a let binding, so we can use it later
                 let new_hole = local_hole.value.clone();
@@ -1027,12 +1029,12 @@ pub mod typer {
                     let expr_type = match &*value {
                         // If it's an abstraction, we should generalize it before
                         // checking the type of the expression
-                        expr @ Expr::Abstr(_, _) => {
-                            let type_rep = self.clone().create_new_type("_").infer(expr.clone())?;
+                        val @ Expr::Abstr(_, _) => {
+                            let type_rep = self.clone().create_new_type("_").infer(val.clone())?;
 
                             self.generalize(type_rep)
                         }
-                        _ => self.infer(*expr.clone())?,
+                        _ => self.infer(*value.clone())?,
                     };
                     let ctx = self.clone().create_variable(name.text, expr_type);
 
@@ -1096,5 +1098,15 @@ pub mod typer {
 }
 
 fn main() {
-    println!("Hello, world!");
+    let ctx = typing::Context::default();
+
+    let type_repr = ctx
+        .infer(Expr::Let(
+            /* name  = */ "a".into(),
+            /* value = */ Expr::Value(0).into(),
+            /* expr  = */ Expr::Ident("a".into()).into(),
+        ))
+        .unwrap();
+
+    println!("{:?}", type_repr.debug(&ctx));
 }
