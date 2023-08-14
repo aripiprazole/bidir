@@ -210,11 +210,9 @@ pub mod error {
 
 /// The type system tree of this simple programming language.
 pub mod typing {
-    use std::{
-        cell::{Cell, RefCell},
-        hash::Hash,
-        rc::Rc,
-    };
+    use std::cell::{Cell, RefCell};
+    use std::hash::Hash;
+    use std::rc::Rc;
 
     /// De bruijin level to check the scope of variables.
     pub type Level = usize;
@@ -396,12 +394,12 @@ pub mod debug {
         /// This is used to print the type system in a human readable way.
         pub fn debug_all<'db, 'sema>(
             &'sema self,
-            p: bool,
+            parens: bool,
             db: &'db Context,
         ) -> TypeDebug<'db, 'sema> {
             TypeDebug {
                 db,
-                parens: p,
+                parens,
                 sema: self,
             }
         }
@@ -642,11 +640,9 @@ pub mod generalization {
 pub mod unification {
     use std::rc::Rc;
 
-    use crate::{
-        error::TypeError,
-        type_error,
-        typing::{Context, Hole, HoleRef, Level, Type},
-    };
+    use crate::error::TypeError;
+    use crate::type_error;
+    use crate::typing::{Context, Hole, HoleRef, Level, Type};
 
     /// Checks if a hole is valid for unification. We need to do the following checks:
     ///
@@ -775,12 +771,12 @@ pub mod unification {
 ///
 /// This performs the subtyping relation between two types.
 pub mod subsumption {
-    use crate::{
-        error::TypeError,
-        typing::{Context, Hole, HoleRef, Type},
-        unification::unify,
-    };
+    use crate::error::TypeError;
+    use crate::typing::{Context, Hole, HoleRef, Type};
+    use crate::unification::unify;
 
+    /// The direction of the subtyping relation. If it's checking or inferring
+    #[derive(Debug, Clone, Copy)]
     enum Direction {
         Left,
         Right,
@@ -806,8 +802,8 @@ pub mod subsumption {
                 let hole_b = HoleRef::new(Hole::Empty(scope));
 
                 hole.update(Type::Fun(
-                    /* domain   = */ Box::new(Type::Hole(hole_a.clone())),
-                    /* codomain = */ Box::new(Type::Hole(hole_b.clone())),
+                    /* domain   = */ Type::Hole(hole_a.clone()).into(),
+                    /* codomain = */ Type::Hole(hole_b.clone()).into(),
                 ));
 
                 // Subtyping relation is contravariant on the domain
@@ -826,8 +822,8 @@ pub mod subsumption {
                 let hole_b = HoleRef::new(Hole::Empty(scope));
 
                 hole.update(Type::Fun(
-                    /* domain   = */ Box::new(Type::Hole(hole_a.clone())),
-                    /* codomain = */ Box::new(Type::Hole(hole_b.clone())),
+                    /* domain   = */ Type::Hole(hole_a.clone()).into(),
+                    /* codomain = */ Type::Hole(hole_b.clone()).into(),
                 ));
 
                 // Subtyping relation is contravariant on the domain
@@ -891,11 +887,9 @@ pub mod subsumption {
 
 /// The mutually recursive type check functions of this simple programming language.
 pub mod typer {
-    use crate::{
-        ast::Expr,
-        type_error,
-        typing::{Context, Hole, HoleRef, Type},
-    };
+    use crate::ast::Expr;
+    use crate::type_error;
+    use crate::typing::{Context, Hole, HoleRef, Type};
 
     impl Context {
         /// Checks the type of an expression.
@@ -997,8 +991,8 @@ pub mod typer {
                             let hole_b = HoleRef::new(Hole::Empty(scope));
 
                             hole.update(Type::Fun(
-                                /* domain   = */ Box::new(Type::Hole(hole_a.clone())),
-                                /* codomain = */ Box::new(Type::Hole(hole_b.clone())),
+                                /* domain   = */ Type::Hole(hole_a.clone()).into(),
+                                /* codomain = */ Type::Hole(hole_b.clone()).into(),
                             ));
 
                             self.check(term, Type::Hole(hole_a))?;
