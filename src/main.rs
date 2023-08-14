@@ -553,10 +553,10 @@ pub mod substitution {
         /// the type.
         ///
         /// NOTE: This is a convenience function.
-        pub fn substitute(self, name: &str, replacement: Self) -> Self {
-            let mut type_repr = self.clone();
-            type_repr.replace(name, replacement);
-            type_repr
+        #[inline(always)]
+        pub fn substitute(mut self, name: &str, replacement: Self) -> Self {
+            self.replace(name, replacement);
+            self
         }
     }
 }
