@@ -775,7 +775,7 @@ pub mod subsumption {
     use crate::typing::{Context, Hole, HoleRef, Type};
     use crate::unification::unify;
 
-    /// The direction of the subtyping relation. If it's checking or inferring
+    /// The direction of the subtyping relation.
     #[derive(Debug, Clone, Copy)]
     enum Direction {
         Left,
@@ -1061,11 +1061,15 @@ pub mod typer {
                 //  Ψ ⊢ A → C • e ⇒⇒ C
                 // ```
                 Expr::Apply(box f, box arg) => self.apply(self.infer(f)?, arg),
+                // Under the context `Ψ`, `e` synthesizes type `A` and under the
+                // context `Ψ, x : A`, `e′` checks against type `C`:
                 // ```
-                //
-                // ────────────────────────────
-                //
+                //  Ψ ⊢ e ⇒ A    Ψ, x:GEN(A) ⊢ e′ ⇐ C
+                // ────────────────────────────────────
+                //  Ψ ⊢ let x = (\x.e) in e′ ⇐ C
                 // ```
+                // NOTE: The generalization is done by [`Context::generalize`]. It's
+                // only appliable to lambda abstractions.
                 Expr::Let(name, box value @ Expr::Abstr(_, _), box expr) => {
                     // If it's an abstraction, we should generalize it before
                     // checking the type of the expression
@@ -1078,8 +1082,8 @@ pub mod typer {
                 // Under the context `Ψ`, `e` synthesizes type `A` and under the
                 // context `Ψ, x : A`, `e′` checks against type `C`:
                 // ```
-                //  Ψ ⊢ e ⇒ A Ψ, x : A ⊢ e′ ⇐ C
-                // ─────────────────────────────
+                //  Ψ ⊢ e ⇒ A    Ψ, x:A ⊢ e′ ⇐ C
+                // ──────────────────────────────
                 //  Ψ ⊢ let x = e in e′ ⇐ C
                 // ```
                 // NOTE: Note the absence of generalization in this rule.
@@ -1094,7 +1098,7 @@ pub mod typer {
                 // ```
                 //  Ψ ⊢ σ → τ   Ψ, x:σ ⊢ e ⇐ τ
                 // ────────────────────────────
-                //  Ψ ⊢ (\x. e) ⇒ σ → τ
+                //  Ψ ⊢ (\x.e) ⇒ σ → τ
                 // ```
                 //
                 // Or with algorithmic typing rules:
