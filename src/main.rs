@@ -935,17 +935,47 @@ pub mod typer {
         /// Synthesizes the type of an expression.
         pub fn infer(&self, term: Expr) -> Result<Type, crate::error::TypeError> {
             match term {
+                // Integer axiom, every integer [`isize`] is of type `Int`
+                // ```
+                //
+                // ────────────────────
+                //  1, 2, ... : Int
+                // ```
                 Expr::Value(_) => Ok(Type::Constr("Int".into())),
+                // Under the context `Ψ`, a variable `x` is of type `A` if `x` is
+                // bound to `A` in `Ψ`:
+                // ```
+                // (x : A) ∈ Ψ
+                // ────────────────────────────
+                //  Ψ ⊢ x ⇒ A
+                // ```
                 Expr::Ident(name) => self.lookup(&name.text).cloned(),
+                // Under the context `Ψ`, `e` is the type of `A` and checks against
+                // `A`:
+                // ```
+                //  Ψ ⊢ e ⇒ A
+                // ────────────────────────────
+                //  Ψ ⊢ (e : A) ⇒ A
+                // ```
                 Expr::Annot(box expr, type_repr) => {
                     let type_repr = Type::from(type_repr);
                     self.check(expr, type_repr.clone())?;
                     Ok(type_repr)
                 }
-                Expr::Apply(f, arg) => {
-                    let f_type = self.infer(*f)?;
-                    self.apply(f_type, *arg)
-                }
+                // Under the context `Ψ`, applying a function type of `A → C` to
+                // `e`, synthesizes type `C`:
+                //
+                // ```
+                //  Ψ ⊢ e ⇐ A
+                // ────────────────────────────
+                //  Ψ ⊢ A → C • e ⇒⇒ C
+                // ```
+                Expr::Apply(box f, box arg) => self.apply(self.infer(f)?, arg),
+                // ```
+                //
+                // ────────────────────────────
+                //
+                // ```
                 Expr::Let(name, box value, box expr) => {
                     let expr_type = match &value {
                         // If it's an abstraction, we should generalize it before
@@ -961,6 +991,13 @@ pub mod typer {
 
                     ctx.infer(expr)
                 }
+                // Under the context `Ψ`, a lambda abstraction `\x. e` is of type
+                // `σ → τ` if `e` is of type `τ` under the context `Ψ, x:σ`:
+                // ```
+                //  Ψ ⊢ σ → τ   Ψ, x:σ ⊢ e ⇐ τ
+                // ────────────────────────────
+                //  Ψ ⊢ (\x. e) ⇒ σ → τ
+                // ```
                 Expr::Abstr(name, box expr) => {
                     let domain = Type::Hole(HoleRef::new(Hole::Empty(self.level)));
                     let ctx = self.clone().create_variable(name.text, domain.clone());
