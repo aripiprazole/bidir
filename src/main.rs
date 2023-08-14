@@ -1,3 +1,5 @@
+#![feature(box_patterns)]
+
 use ast::Expr;
 
 use crate::ast::TypeRepr;
@@ -251,6 +253,11 @@ pub mod typing {
                 value: Rc::new(RefCell::new(value)),
             }
         }
+
+        /// Clones the hole reference out of the given hole reference.
+        pub fn value(&self) -> Hole {
+            self.value.borrow().clone()
+        }
     }
 
     impl Hash for HoleRef {
@@ -314,11 +321,11 @@ pub mod typing {
             match value {
                 Constr(constr) if constr.text == "Int" => Type::Constr(constr.text),
                 Constr(constr) => Type::Variable(constr.text),
-                Forall(name, type_repr) => Type::Forall(name.text, Box::new((*type_repr).into())),
-                Fun(domain, codomain) => {
+                Forall(name, box type_repr) => Type::Forall(name.text, Box::new(type_repr.into())),
+                Fun(box domain, box codomain) => {
                     Type::Fun(
-                        /* domain   = */ Box::new((*domain).into()),
-                        /* codomain = */ Box::new((*codomain).into()),
+                        /* domain   = */ Box::new(domain.into()),
+                        /* codomain = */ Box::new(codomain.into()),
                     )
                 }
             }
@@ -426,21 +433,11 @@ pub mod debug {
                     write!(f, "{name}")
                 }
                 Type::Hole(hole) => {
-                    let hole_ref = hole.value.borrow();
-
-                    // Get the contents of the hole
-                    match &*hole_ref {
+                    match hole.value() {
                         Hole::Empty(lvl) => {
                             write!(f, "?{lvl}")
                         }
                         Hole::Filled(type_repr) => {
-                            // Clone so we can drop the borrow to the hole
-                            //
-                            // NOTE: We drop the hole, so we don't have two borrows
-                            // to the same hole.
-                            let type_repr = type_repr.clone();
-                            drop(hole_ref); // Drop the borrow
-
                             // Print the type representation of the hole
                             type_repr.debug_all(p, ctx).fmt(f)
                         }
@@ -616,15 +613,8 @@ pub mod generalization {
                 generalize_over(ctx, quantifiers, type_repr);
             }
             Type::Hole(hole) => {
-                // Create a let binding, so we can use it later
-                let hole_ref = hole.value.borrow();
-
-                match &*hole_ref {
-                    Hole::Empty(lvl) if *lvl > ctx.level => {
-                        // Drop the hole ref so we can get a new mutable reference
-                        // for the hole
-                        drop(hole_ref);
-
+                match hole.value() {
+                    Hole::Empty(lvl) if lvl > ctx.level => {
                         // Creates a new type variable
                         let new_type_var = ctx.new_fresh_variable();
                         quantifiers.push(new_type_var.clone());
@@ -633,13 +623,7 @@ pub mod generalization {
                         // with the new type variable.
                         *hole.value.borrow_mut() = Hole::Filled(Type::Variable(new_type_var));
                     }
-                    Hole::Filled(type_repr) => {
-                        let mut type_repr = type_repr.clone();
-
-                        // Drop the hole ref so we can get a new mutable reference
-                        // for the hole
-                        drop(hole_ref);
-
+                    Hole::Filled(mut type_repr) => {
                         generalize_over(ctx, quantifiers, &mut type_repr);
 
                         // Updates the contents of the hole
@@ -659,6 +643,7 @@ pub mod unification {
     use std::rc::Rc;
 
     use crate::{
+        error::TypeError,
         type_error,
         typing::{Context, Hole, HoleRef, Level, Type},
     };
@@ -667,39 +652,27 @@ pub mod unification {
     ///
     /// 1. Occurs check: If the variable not occurs in the type, infinite types are impossible.
     /// 2. Level check: If the level of the hole is greater than the level of the context, we can't unify it.
-    fn pre_check_hole(
-        ctx: &Context,
-        hole: HoleRef,
-        scope: Level,
-        type_repr: Type,
-    ) -> Result<(), crate::error::TypeError> {
-        match type_repr {
+    fn pre_check_hole(hole: HoleRef, scope: Level, sema: Type) -> Result<(), TypeError> {
+        match sema {
             Type::Hole(local_hole) if Rc::ptr_eq(&local_hole.value, &hole.value) => {
                 return Err(type_error!("occurs check: infinite type"));
             }
             Type::Fun(domain, codomain) => {
-                pre_check_hole(ctx, hole.clone(), scope, *domain)?;
-                pre_check_hole(ctx, hole, scope, *codomain)?;
+                pre_check_hole(hole.clone(), scope, *domain)?;
+                pre_check_hole(hole, scope, *codomain)?;
             }
-            Type::Forall(_, type_repr) => {
-                pre_check_hole(ctx, hole, scope, *type_repr)?;
+            Type::Forall(_, box type_repr) => {
+                pre_check_hole(hole, scope, type_repr)?;
             }
             Type::Hole(local_hole) => {
                 // Create a let binding, so we can use it later
-                let new_hole = local_hole.value.clone();
-                let hole_ref = new_hole.borrow();
-
-                match &*hole_ref {
-                    Hole::Empty(lvl) if *lvl > scope => {
-                        // Drop the hole ref so we can get a new mutable reference
-                        // for the hole
-                        drop(hole_ref);
-
+                match local_hole.value() {
+                    Hole::Empty(lvl) if lvl > scope => {
                         // Updates the contents of the hole
                         // with the new empty hole
-                        *new_hole.borrow_mut() = Hole::Empty(scope);
+                        *local_hole.value.borrow_mut() = Hole::Empty(scope);
                     }
-                    Hole::Filled(type_repr) => pre_check_hole(ctx, hole, scope, type_repr.clone())?,
+                    Hole::Filled(type_repr) => pre_check_hole(hole, scope, type_repr)?,
                     _ => {}
                 }
             }
@@ -713,39 +686,28 @@ pub mod unification {
         /// Fills the content of a hole with a new type.
         ///
         /// It does prechecks on holes before filling them and can return type errors.
-        pub fn fill(&self, ctx: &Context, sema: Type) -> Result<(), crate::error::TypeError> {
-            let hole_ref = self.value.borrow();
-
-            match &*hole_ref {
+        pub fn fill(&self, ctx: &Context, sema: Type) -> Result<(), TypeError> {
+            match self.value() {
                 Hole::Empty(scope) => {
-                    // Deref the scope so we can use it later
-                    let scope = *scope;
-
-                    // Drop the hole ref so we can get a new mutable reference
-                    // for the hole
-                    drop(hole_ref);
-
                     // Checks the hole before filling it, so we can avoid
                     // mismatched levels and infinite types.
-                    pre_check_hole(ctx, self.clone(), scope, sema.clone())?;
+                    pre_check_hole(self.clone(), scope, sema.clone())?;
 
                     // Updates the contents of the hole
                     // with the new type
                     *self.value.borrow_mut() = Hole::Filled(sema);
                 }
-                Hole::Filled(type_repr) => {
-                    unify(ctx, sema, type_repr.clone())?;
-                }
+                Hole::Filled(type_repr) => unify(ctx, sema, type_repr)?,
             }
 
             Ok(())
         }
     }
 
-    /// Unify two types. Perfmors equality checks and fills holes.
+    /// Unify two types. Performs equality checks and fills holes.
     ///
     /// It can return type errors.
-    pub fn unify(ctx: &Context, sema_a: Type, sema_b: Type) -> Result<(), crate::error::TypeError> {
+    pub fn unify(ctx: &Context, sema_a: Type, sema_b: Type) -> Result<(), TypeError> {
         match (sema_a, sema_b) {
             // Hole unification, attributing value
             // to the holes
@@ -757,13 +719,13 @@ pub mod unification {
             (Type::Constr(name_a), Type::Constr(name_b)) if name_a == name_b => {}
 
             // Function unification
-            (Type::Fun(domain_a, codomain_a), Type::Fun(domain_b, codomain_b)) => {
-                unify(ctx, *domain_a, *domain_b)?;
-                unify(ctx, *codomain_a, *codomain_b)?;
+            (Type::Fun(box domain_a, box codomain_a), Type::Fun(box domain_b, box codomain_b)) => {
+                unify(ctx, domain_a, domain_b)?;
+                unify(ctx, codomain_a, codomain_b)?;
             }
 
             // Forall unification
-            (Type::Forall(a, type_a), Type::Forall(b, type_b)) => {
+            (Type::Forall(a, type_a), Type::Forall(b, box type_b)) => {
                 // Alpha equivalence betwhen quantifiers:
                 // - `forall 'a. 'a -> 'a` is equivalent to `forall 'b. 'b -> 'b`
                 //
@@ -795,7 +757,7 @@ pub mod unification {
 
     impl Context {
         /// Unifies two types.
-        pub fn unify(&self, sema_a: Type, sema_b: Type) -> Result<Type, crate::error::TypeError> {
+        pub fn unify(&self, sema_a: Type, sema_b: Type) -> Result<Type, TypeError> {
             let type_repr = sema_a.clone();
             unify(self, sema_a, sema_b)?;
             Ok(type_repr)
@@ -808,6 +770,7 @@ pub mod unification {
 /// This performs the subtyping relation between two types.
 pub mod subsumption {
     use crate::{
+        error::TypeError,
         typing::{Context, Hole, HoleRef, Type},
         unification::unify,
     };
@@ -824,81 +787,54 @@ pub mod subsumption {
     ///
     /// - `direction`: The direction of the subtyping relation. If it's checking or inferring
     /// the left or right side of the relation.
-    fn sub_hole(
-        ctx: &Context,
-        hole: HoleRef,
-        sema: Type,
-        direction: Direction,
-    ) -> Result<(), crate::error::TypeError> {
-        let new_hole = hole.value.clone();
-        let hole_ref = new_hole.borrow();
+    fn sub_hole(ctx: &Context, hole: HoleRef, sema: Type, dir: Direction) -> Result<(), TypeError> {
+        match (hole.value(), dir, sema) {
+            // Left rules
+            (Hole::Empty(_), Direction::Left, Type::Forall(name, box type_repr)) => {
+                let ctx = ctx.clone().create_new_type(name.clone());
 
-        match &*hole_ref {
-            Hole::Empty(scope) => {
-                // Deref the scope so we can use it later
-                let scope = *scope;
+                sub_hole(&ctx, hole, type_repr, Direction::Left)?;
+            }
+            (Hole::Empty(scope), Direction::Left, Type::Fun(box domain, box codomain)) => {
+                let hole_a = HoleRef::new(Hole::Empty(scope));
+                let hole_b = HoleRef::new(Hole::Empty(scope));
 
-                // Drop the hole ref so we can get a new mutable reference
-                // for the hole
-                drop(hole_ref);
+                *hole.value.borrow_mut() = Hole::Filled(Type::Fun(
+                    /* domain   = */ Box::new(Type::Hole(hole_a.clone())),
+                    /* codomain = */ Box::new(Type::Hole(hole_b.clone())),
+                ));
 
-                match (direction, sema) {
-                    // Left rules
-                    (Direction::Left, Type::Forall(name, type_repr)) => {
-                        let type_repr = *type_repr.clone();
-                        let ctx = ctx.clone().create_new_type(name.clone());
-
-                        sub_hole(&ctx, hole, type_repr, Direction::Left)?;
-                    }
-                    (Direction::Left, Type::Fun(domain, codomain)) => {
-                        let domain = *domain.clone();
-                        let codomain = *codomain.clone();
-
-                        let hole_a = HoleRef::new(Hole::Empty(scope));
-                        let hole_b = HoleRef::new(Hole::Empty(scope));
-
-                        *hole.value.borrow_mut() = Hole::Filled(Type::Fun(
-                            /* domain   = */ Box::new(Type::Hole(hole_a.clone())),
-                            /* codomain = */ Box::new(Type::Hole(hole_b.clone())),
-                        ));
-
-                        // Subtyping relation is contravariant on the domain
-                        sub_hole(ctx, hole_a, domain, Direction::Right)?;
-                        sub_hole(ctx, hole_b, codomain, Direction::Left)?;
-                    }
-
-                    // Right rules
-                    (Direction::Right, Type::Forall(name, type_repr)) => {
-                        let type_repr = *type_repr.clone();
-                        let sema = ctx.instantiate(&name, type_repr);
-
-                        sub_hole(&ctx, hole, sema, Direction::Right)?;
-                    }
-                    (Direction::Right, Type::Fun(domain, codomain)) => {
-                        let domain = *domain.clone();
-                        let codomain = *codomain.clone();
-
-                        let hole_a = HoleRef::new(Hole::Empty(scope));
-                        let hole_b = HoleRef::new(Hole::Empty(scope));
-
-                        *hole.value.borrow_mut() = Hole::Filled(Type::Fun(
-                            /* domain   = */ Box::new(Type::Hole(hole_a.clone())),
-                            /* codomain = */ Box::new(Type::Hole(hole_b.clone())),
-                        ));
-
-                        // Subtyping relation is contravariant on the domain
-                        sub_hole(ctx, hole_a, domain, Direction::Left)?;
-                        sub_hole(ctx, hole_b, codomain, Direction::Right)?;
-                    }
-
-                    // For everything else, a <: b, only if a = b
-                    (_, sema) => hole.fill(ctx, sema)?,
-                }
+                // Subtyping relation is contravariant on the domain
+                sub_hole(ctx, hole_a, domain, Direction::Right)?;
+                sub_hole(ctx, hole_b, codomain, Direction::Left)?;
             }
 
+            // Right rules
+            (Hole::Empty(_), Direction::Right, Type::Forall(name, box type_repr)) => {
+                let sema = ctx.instantiate(&name, type_repr);
+
+                sub_hole(ctx, hole, sema, Direction::Right)?;
+            }
+            (Hole::Empty(scope), Direction::Right, Type::Fun(box domain, box codomain)) => {
+                let hole_a = HoleRef::new(Hole::Empty(scope));
+                let hole_b = HoleRef::new(Hole::Empty(scope));
+
+                *hole.value.borrow_mut() = Hole::Filled(Type::Fun(
+                    /* domain   = */ Box::new(Type::Hole(hole_a.clone())),
+                    /* codomain = */ Box::new(Type::Hole(hole_b.clone())),
+                ));
+
+                // Subtyping relation is contravariant on the domain
+                sub_hole(ctx, hole_a, domain, Direction::Left)?;
+                sub_hole(ctx, hole_b, codomain, Direction::Right)?;
+            }
+
+            // For everything else, a <: b, only if a = b
+            (Hole::Empty(_), _, sema) => hole.fill(ctx, sema)?,
+
             // Tries to fill the hole with the type
-            Hole::Filled(type_repr) => {
-                sub(ctx, type_repr.clone(), sema)?;
+            (Hole::Filled(type_repr), _, sema) => {
+                sub(ctx, type_repr, sema)?;
             }
         };
 
@@ -906,28 +842,28 @@ pub mod subsumption {
     }
 
     /// Performs the subtyping relation between two types.
-    pub fn sub(ctx: &Context, sema_a: Type, sema_b: Type) -> Result<(), crate::error::TypeError> {
+    pub fn sub(ctx: &Context, sema_a: Type, sema_b: Type) -> Result<(), TypeError> {
         match (sema_a, sema_b) {
             // Hole unification, attributing value
             (Type::Hole(hole), sema) => sub_hole(ctx, hole, sema, Direction::Left)?,
             (sema, Type::Hole(hole)) => sub_hole(ctx, hole, sema, Direction::Right)?,
 
             // Forall subsumtipon
-            (sema_a, Type::Forall(name, type_repr)) => {
+            (sema_a, Type::Forall(name, box type_repr)) => {
                 let ctx = ctx.clone().create_new_type(name.clone());
 
-                sub(&ctx, sema_a, *type_repr.clone())?;
+                sub(&ctx, sema_a, type_repr)?;
             }
-            (Type::Forall(name, type_repr), sema_b) => {
-                let sema_a = ctx.instantiate(&name, *type_repr.clone());
+            (Type::Forall(name, box type_repr), sema_b) => {
+                let sema_a = ctx.instantiate(&name, type_repr);
 
-                sub(&ctx, sema_a, sema_b)?;
+                sub(ctx, sema_a, sema_b)?;
             }
 
             // Function subsumption
-            (Type::Fun(domain_a, codomain_a), Type::Fun(domain_b, codomain_b)) => {
-                sub(ctx, *domain_b, *domain_a)?;
-                sub(ctx, *codomain_a, *codomain_b)?;
+            (Type::Fun(box domain_a, box codomain_a), Type::Fun(box domain_b, box codomain_b)) => {
+                sub(ctx, domain_b, domain_a)?;
+                sub(ctx, codomain_a, codomain_b)?;
             }
 
             // For everything else, a <: b, only if a = b
@@ -939,7 +875,7 @@ pub mod subsumption {
 
     impl Context {
         /// Performs the subtyping relation between two types.
-        pub fn sub(&self, sema_a: Type, sema_b: Type) -> Result<Type, crate::error::TypeError> {
+        pub fn sub(&self, sema_a: Type, sema_b: Type) -> Result<Type, TypeError> {
             let type_repr = sema_a.clone();
             sub(self, sema_a, sema_b)?;
             Ok(type_repr)
@@ -959,48 +895,31 @@ pub mod typer {
         /// Checks the type of an expression.
         pub fn check(&self, term: Expr, type_repr: Type) -> Result<(), crate::error::TypeError> {
             match (term, type_repr) {
-                (term, ref type_repr @ Type::Hole(ref hole)) => {
-                    let hole = hole.clone();
-                    let hole_ref = hole.value.borrow();
-
-                    match &*hole_ref {
-                        Hole::Empty(_) => {
-                            // Drop the hole ref so we can get a new mutable reference
-                            // for the hole
-                            drop(hole_ref);
-
-                            let synth = self.infer(term)?;
-                            self.sub(synth, type_repr.clone())?;
-                        }
-                        Hole::Filled(local) => {
-                            // Clone the local type so we can use it later
-                            let local = local.clone();
-
-                            // Drop the hole ref so we can get a new mutable reference
-                            // for the hole
-                            drop(hole_ref);
-
-                            self.sub(type_repr.clone(), local.clone())?;
-                        }
+                (term, ref type_repr @ Type::Hole(ref hole)) => match hole.value() {
+                    Hole::Empty(_) => {
+                        let synth = self.infer(term)?;
+                        self.sub(synth, type_repr.clone())?;
                     }
-                }
-                (term, Type::Forall(name, type_repr)) => {
+                    Hole::Filled(local) => {
+                        self.sub(type_repr.clone(), local.clone())?;
+                    }
+                },
+                (term, Type::Forall(name, box type_repr)) => {
                     let bound = Type::Bound(self.level);
                     let ctx = self.clone().create_new_type(name.clone());
 
-                    ctx.check(term, type_repr.clone().substitute(&name, bound))?;
+                    ctx.check(term, type_repr.substitute(&name, bound))?;
                 }
-                (Expr::Abstr(domain_e, codomain_e), Type::Fun(domain_t, codomain_t)) => {
-                    let domain_t = *domain_t.clone();
-                    let ctx = self.clone().create_variable(domain_e.text, domain_t);
+                (Expr::Abstr(name, box expr_e), Type::Fun(box domain, box codomain)) => {
+                    let ctx = self.clone().create_variable(name.text, domain);
 
-                    ctx.check(*codomain_e.clone(), *codomain_t.clone())?;
+                    ctx.check(expr_e, codomain)?;
                 }
-                (Expr::Let(name, value, expr), type_repr) => {
-                    let expr_type = self.infer(*value.clone())?;
+                (Expr::Let(name, box value, box expr), type_repr) => {
+                    let expr_type = self.infer(value)?;
                     let ctx = self.clone().create_variable(name.text, expr_type);
 
-                    ctx.check(*expr.clone(), type_repr)?;
+                    ctx.check(expr, type_repr)?;
                 }
 
                 // Tries the default
@@ -1018,34 +937,34 @@ pub mod typer {
             match term {
                 Expr::Value(_) => Ok(Type::Constr("Int".into())),
                 Expr::Ident(name) => self.lookup(&name.text).cloned(),
-                Expr::Annot(expr, type_repr) => {
+                Expr::Annot(box expr, type_repr) => {
                     let type_repr = Type::from(type_repr);
-                    self.check(*expr, type_repr.clone())?;
+                    self.check(expr, type_repr.clone())?;
                     Ok(type_repr)
                 }
                 Expr::Apply(f, arg) => {
                     let f_type = self.infer(*f)?;
                     self.apply(f_type, *arg)
                 }
-                Expr::Let(name, value, expr) => {
-                    let expr_type = match &*value {
+                Expr::Let(name, box value, box expr) => {
+                    let expr_type = match &value {
                         // If it's an abstraction, we should generalize it before
                         // checking the type of the expression
-                        val @ Expr::Abstr(_, _) => {
-                            let type_rep = self.clone().create_new_type("_").infer(val.clone())?;
+                        &Expr::Abstr(_, _) => {
+                            let type_rep = self.clone().create_new_type("_").infer(value)?;
 
                             self.generalize(type_rep)
                         }
-                        _ => self.infer(*value.clone())?,
+                        _ => self.infer(value)?,
                     };
                     let ctx = self.clone().create_variable(name.text, expr_type);
 
-                    ctx.infer(*expr)
+                    ctx.infer(expr)
                 }
-                Expr::Abstr(name, expr) => {
+                Expr::Abstr(name, box expr) => {
                     let domain = Type::Hole(HoleRef::new(Hole::Empty(self.level)));
                     let ctx = self.clone().create_variable(name.text, domain.clone());
-                    let codomain = ctx.infer(*expr)?;
+                    let codomain = ctx.infer(expr)?;
 
                     Ok(Type::Fun(domain.into(), codomain.into()))
                 }
@@ -1057,26 +976,19 @@ pub mod typer {
         /// It has a weird symbol in "Complete and Easy"..
         pub fn apply(&self, f: Type, term: Expr) -> Result<Type, crate::error::TypeError> {
             match f {
-                Type::Fun(domain, codomain) => {
-                    self.check(term, *domain)?;
+                Type::Fun(box domain, box codomain) => {
+                    self.check(term, domain)?;
 
-                    Ok(*codomain)
+                    Ok(codomain)
                 }
-                Type::Forall(name, type_repr) => {
-                    self.apply(self.instantiate(&name, *type_repr), term)
+                Type::Forall(name, box type_repr) => {
+                    self.apply(self.instantiate(&name, type_repr), term)
                 }
                 Type::Hole(hole) => {
-                    let hole = hole.clone();
-                    let hole_ref = hole.value.borrow();
-
-                    match &*hole_ref {
+                    match hole.value() {
                         Hole::Empty(scope) => {
-                            let hole_a = HoleRef::new(Hole::Empty(*scope));
-                            let hole_b = HoleRef::new(Hole::Empty(*scope));
-
-                            // Drop the hole ref so we can get a new mutable reference
-                            // for the hole
-                            drop(hole_ref);
+                            let hole_a = HoleRef::new(Hole::Empty(scope));
+                            let hole_b = HoleRef::new(Hole::Empty(scope));
 
                             *hole.value.borrow_mut() = Hole::Filled(Type::Fun(
                                 /* domain   = */ Box::new(Type::Hole(hole_a.clone())),
