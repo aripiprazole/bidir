@@ -213,6 +213,7 @@ pub mod typing {
     use std::cell::{Cell, RefCell};
     use std::hash::Hash;
     use std::rc::Rc;
+    use fxhash::FxBuildHasher;
 
     /// De bruijin level to check the scope of variables.
     pub type Level = usize;
@@ -345,7 +346,7 @@ pub mod typing {
         pub names: Vec<String>,
 
         /// The types of the variables in the context.
-        pub environment: im_rc::HashMap<String, Type>,
+        pub environment: im_rc::HashMap<String, Type, FxBuildHasher>,
     }
 }
 
@@ -653,6 +654,9 @@ pub mod unification {
             Type::Hole(local_hole) if Rc::ptr_eq(&local_hole.value, &hole.value) => {
                 return Err(type_error!("occurs check: infinite type"));
             }
+            Type::Bound(lvl) if lvl > scope => {
+                return Err(type_error!("level check: can not unify a bound variable with a hole with a greater level than the context"));
+            }
             Type::Fun(domain, codomain) => {
                 pre_check_hole(hole.clone(), scope, *domain)?;
                 pre_check_hole(hole, scope, *codomain)?;
@@ -750,7 +754,7 @@ pub mod unification {
                     "can not unify two types {:?} and {:?}",
                     sema_a.debug(ctx),
                     sema_b.debug(ctx)
-                ))
+                ));
             }
         };
 
@@ -898,7 +902,7 @@ pub mod subsumption {
             // ```
             (sema_a, Type::Forall(name, box type_repr)) => {
                 // The `➤` symbol means that we are elevating the context, so we can make
-                // the type variable "invariant" in the context.
+                // the type variable "invariant" in outside of the context.
                 //
                 // Being invariant means that we can't change the type variable's value in context
                 // that are not the same context, or contexts that are extending it's context.
@@ -1209,39 +1213,39 @@ fn main() {
     let ctx = typing::Context::default();
 
     let type_repr = ctx
-        .infer(Expr::Apply(
-            /* f  = */
+        .infer(Expr::Annot(
+            /* f      = */
             Expr::Annot(
                 /* value = */
                 Expr::Abstr(
-                    /* name  = */ "f".into(),
-                    /* expr  = */
-                    Expr::Apply(
-                        /* f   = */ Expr::Ident("f".into()).into(),
-                        /* arg = */ Expr::Value(10).into(),
-                    )
-                    .into(),
-                )
-                .into(),
-                /* type_repr = */
-                TypeRepr::Fun(
-                    /* f      = */
+                    /* name  = */ "x".into(),
+                    /* expr  = */ Expr::Ident("x".into()).into(),
+                ).into(),
+                /* type_repr = */ TypeRepr::Forall(
+                    /* name      = */ "a".into(),
+                    /* type_repr = */
                     TypeRepr::Forall(
-                        /* name      = */ "a".into(),
+                        /* name      = */ "b".into(),
                         /* type_repr = */
                         TypeRepr::Fun(
                             /* domain   = */ TypeRepr::Constr("a".into()).into(),
                             /* codomain = */ TypeRepr::Constr("a".into()).into(),
-                        )
-                        .into(),
-                    )
-                    .into(),
+                        ).into(),
+                    ).into(),
+                ).into(),
+            ).into(),
+            /* type_repr = */ TypeRepr::Forall(
+                /* name      = */ "a".into(),
+                /* type_repr = */
+                TypeRepr::Forall(
+                    /* name      = */ "b".into(),
                     /* type_repr = */
-                    TypeRepr::Constr("Int".into()).into(),
-                ),
-            )
-            .into(),
-            /* arg = */ Expr::Abstr("x".into(), Expr::Ident("x".into()).into()).into(),
+                    TypeRepr::Fun(
+                        /* domain   = */ TypeRepr::Constr("b".into()).into(),
+                        /* codomain = */ TypeRepr::Constr("a".into()).into(),
+                    ).into(),
+                ).into(),
+            ).into(),
         ))
         .unwrap();
 
