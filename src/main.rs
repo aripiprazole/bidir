@@ -976,17 +976,22 @@ pub mod typer {
                 // ────────────────────────────
                 //
                 // ```
-                Expr::Let(name, box value, box expr) => {
-                    let expr_type = match &value {
-                        // If it's an abstraction, we should generalize it before
-                        // checking the type of the expression
-                        &Expr::Abstr(_, _) => {
-                            let type_rep = self.clone().create_new_type("_").infer(value)?;
+                Expr::Let(name, box value @ Expr::Abstr(_, _), box expr) => {
+                    // If it's an abstraction, we should generalize it before
+                    // checking the type of the expression
+                    let type_rep = self.clone().create_new_type("_").infer(value)?;
+                    let expr_type = self.generalize(type_rep);
+                    let ctx = self.clone().create_variable(name.text, expr_type);
 
-                            self.generalize(type_rep)
-                        }
-                        _ => self.infer(value)?,
-                    };
+                    ctx.infer(expr)
+                }
+                // ```
+                //
+                // ────────────────────────────
+                //
+                // ```
+                Expr::Let(name, box value, box expr) => {
+                    let expr_type = self.infer(value)?;
                     let ctx = self.clone().create_variable(name.text, expr_type);
 
                     ctx.infer(expr)
