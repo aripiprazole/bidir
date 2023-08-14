@@ -1,5 +1,7 @@
 use ast::Expr;
 
+use crate::ast::TypeRepr;
+
 /// The abstract syntax tree definition for the programming language, that contains all
 /// possible expressions, types, etc..
 ///
@@ -64,12 +66,12 @@ pub mod ast {
     pub enum TypeRepr {
         /// Represents a type constructor with the given identifier.
         ///
-        /// 1. The identifier should always start with an uppercase letter.
+        /// 1. The identifier should always start with an uppercase letter or a backtick:
         ///
         /// ## Examples
         ///
         /// ```haskell
-        /// A
+        /// 'a, Int, ...
         /// ```
         Constr(Identifier),
 
@@ -78,7 +80,7 @@ pub mod ast {
         /// ## Examples
         ///
         /// ```haskell
-        /// forall A. A
+        /// forall 'a. 'a
         /// ```
         Forall(Identifier, Box<TypeRepr>),
 
@@ -87,7 +89,7 @@ pub mod ast {
         /// ## Examples
         ///
         /// ```haskell
-        /// A -> B
+        /// 'a -> 'b
         /// ```
         Fun(Box<TypeRepr>, Box<TypeRepr>),
     }
@@ -142,9 +144,9 @@ pub mod ast {
         /// ## Examples
         ///
         /// ```haskell
-        /// x : Y
+        /// x : 'x
         /// ```
-        Annot(Box<Expr>, Box<TypeRepr>),
+        Annot(Box<Expr>, TypeRepr),
 
         /// Lambda abstraction of the given identifier to the given
         /// expression.
@@ -274,12 +276,12 @@ pub mod typing {
 
         /// Represents a type name with the given identifier.
         ///
-        /// 1. The identifier should always start with an uppercase letter.
+        /// 1. The identifier should always start with an backtick:
         ///
         /// ## Examples
         ///
         /// ```haskell
-        /// A, B, ...
+        /// 'a, 'b, ...
         /// ```
         Variable(String),
 
@@ -763,7 +765,7 @@ pub mod unification {
             // Forall unification
             (Type::Forall(a, type_a), Type::Forall(b, type_b)) => {
                 // Alpha equivalence betwhen quantifiers:
-                // - `forall A. A -> A` is equivalent to `forall B. B -> B`
+                // - `forall 'a. 'a -> 'a` is equivalent to `forall 'b. 'b -> 'b`
                 //
                 // Because the quantifiers have the same strucutre.
                 let ctx = ctx.clone().create_new_type(b.clone());
@@ -1017,7 +1019,7 @@ pub mod typer {
                 Expr::Value(_) => Ok(Type::Constr("Int".into())),
                 Expr::Ident(name) => self.lookup(&name.text).cloned(),
                 Expr::Annot(expr, type_repr) => {
-                    let type_repr = Type::from(*type_repr);
+                    let type_repr = Type::from(type_repr);
                     self.check(*expr, type_repr.clone())?;
                     Ok(type_repr)
                 }
@@ -1101,10 +1103,39 @@ fn main() {
     let ctx = typing::Context::default();
 
     let type_repr = ctx
-        .infer(Expr::Let(
-            /* name  = */ "a".into(),
-            /* value = */ Expr::Value(0).into(),
-            /* expr  = */ Expr::Ident("a".into()).into(),
+        .infer(Expr::Apply(
+            /* f  = */
+            Expr::Annot(
+                /* value = */
+                Expr::Abstr(
+                    /* name  = */ "f".into(),
+                    /* expr  = */
+                    Expr::Apply(
+                        /* f   = */ Expr::Ident("f".into()).into(),
+                        /* arg = */ Expr::Value(10).into(),
+                    )
+                    .into(),
+                )
+                .into(),
+                /* type_repr = */
+                TypeRepr::Fun(
+                    /* f      = */
+                    TypeRepr::Forall(
+                        /* name      = */ "a".into(),
+                        /* type_repr = */
+                        TypeRepr::Fun(
+                            /* domain   = */ TypeRepr::Constr("a".into()).into(),
+                            /* codomain = */ TypeRepr::Constr("a".into()).into(),
+                        )
+                        .into(),
+                    )
+                    .into(),
+                    /* type_repr = */
+                    TypeRepr::Constr("Int".into()).into(),
+                ),
+            )
+            .into(),
+            /* arg = */ Expr::Abstr("x".into(), Expr::Ident("x".into()).into()).into(),
         ))
         .unwrap();
 
