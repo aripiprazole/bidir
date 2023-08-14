@@ -23,7 +23,7 @@ rust code with a handwritten parser, and some optimizations, like de bruijin lev
    different data structure, like a hashmap, which is pretty fast to deal with, and we can use the `im_rc` crate for
 
 2. Nominal typing, nominal typing makes harder to unify forall expression, and this tutorial presents an idea
-   implementing [debruijin indexes and levels](https://en.wikipedia.org/wiki/De_Bruijn_sequence)
+   implementing debruijin indexes and levels
 
 ## Required Dependencies
 
