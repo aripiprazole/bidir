@@ -895,6 +895,11 @@ pub mod typer {
         /// Checks the type of an expression.
         pub fn check(&self, term: Expr, type_repr: Type) -> Result<(), crate::error::TypeError> {
             match (term, type_repr) {
+                // These are the rules marked with `^α`, `^β` and `^γ` in the paper, they are simply
+                // holes that need to be filled.
+                //
+                // The paper use substitution to fill the holes, but we use a different approach
+                // that is using mutability, see [`HoleRef`].
                 (term, ref type_repr @ Type::Hole(ref hole)) => match hole.value() {
                     Hole::Empty(_) => {
                         let synth = self.infer(term)?;
@@ -904,12 +909,27 @@ pub mod typer {
                         self.sub(type_repr.clone(), local.clone())?;
                     }
                 },
+                // Under the context `Γ` with bound name `α`, `e` checks against type `A` with
+                // otuput context `Δ`:
+                // ```
+                //  Γ,α ⊢ e ⇐ A ⊣ ∆,α,Θ
+                // ───────────────────── ∀I
+                //  Γ ⊢ e ⇐ ∀α. A ⊣ ∆
+                // ```
                 (term, Type::Forall(name, box type_repr)) => {
                     let bound = Type::Bound(self.level);
                     let ctx = self.clone().create_new_type(name.clone());
 
                     ctx.check(term, type_repr.substitute(&name, bound))?;
                 }
+                // Under the context `Γ`, `(λx. e)` checks against type `A → B` with output context
+                // `Δ`:
+                // ```
+                //  Γ,x:A ⊢ e ⇐ B ⊣ ∆,x:A,Θ
+                // ───────────────────────── →I
+                //  Γ ⊢ (λx. e) ⇐ A → B ⊣ ∆
+                // ```
+                // NOTE: `x` has type `A`, and `e` has type `B`.
                 (Expr::Abstr(name, box expr_e), Type::Fun(box domain, box codomain)) => {
                     let ctx = self.clone().create_variable(name.text, domain);
 
@@ -921,11 +941,20 @@ pub mod typer {
 
                     ctx.check(expr, type_repr)?;
                 }
-
-                // Tries the default
+                // Tries the default. a = b, only if a <: b, so the paper presents
+                // the following rules:
+                //
+                // Under the context `Γ`, `()` checks against type `1` and, with output context
+                // Γ (the same context).
+                // ```
+                // ───────────────── 1I
+                //  Γ ⊢ () ⇐ 1 ⊣ Γ
+                // ```
+                //
+                // The `()` type can be known in this code as `Int`, they aren't the same of course,
+                // but they perform a similar role.
                 (term, type_repr) => {
-                    let synth = self.infer(term)?;
-                    self.sub(synth, type_repr)?;
+                    self.sub(self.infer(term)?, type_repr)?;
                 }
             }
 
@@ -937,8 +966,7 @@ pub mod typer {
             match term {
                 // Integer axiom, every integer [`isize`] is of type `Int`
                 // ```
-                //
-                // ────────────────────
+                // ─────────────────
                 //  1, 2, ... : Int
                 // ```
                 Expr::Value(_) => Ok(Type::Constr("Int".into())),
@@ -985,11 +1013,14 @@ pub mod typer {
 
                     ctx.infer(expr)
                 }
+                // Under the context `Ψ`, `e` synthesizes type `A` and under the
+                // context `Ψ, x : A`, `e′` checks against type `C`:
                 // ```
-                //
-                // ────────────────────────────
-                //
+                //  Ψ ⊢ e ⇒ A Ψ, x : A ⊢ e′ ⇐ C
+                // ─────────────────────────────
+                //  Ψ ⊢ let x = e in e′ ⇐ C
                 // ```
+                // NOTE: Note the absence of generalization in this rule.
                 Expr::Let(name, box value, box expr) => {
                     let expr_type = self.infer(value)?;
                     let ctx = self.clone().create_variable(name.text, expr_type);
@@ -1003,6 +1034,14 @@ pub mod typer {
                 // ────────────────────────────
                 //  Ψ ⊢ (\x. e) ⇒ σ → τ
                 // ```
+                //
+                // Or with algorithmic typing rules:
+                // ```
+                //
+                //  Γ,^α,^β,x:^α ⊢ e ⇐ ^β ⊣ ∆,x:^α,Θ
+                // ────────────────────────────────── →I⇒
+                //  Γ ⊢ (λx.e) ⇒ ^α → ^β ⊣ ∆
+                // ```
                 Expr::Abstr(name, box expr) => {
                     let domain = Type::Hole(HoleRef::new(Hole::Empty(self.level)));
                     let ctx = self.clone().create_variable(name.text, domain.clone());
@@ -1015,23 +1054,61 @@ pub mod typer {
 
         /// Applies the type of an expression to another expression.
         ///
-        /// It has a weird symbol in "Complete and Easy"..
+        /// It has a weird symbol in "Complete and Easy":
+        /// 
+        /// - `Γ ⊢ A • e ⇒⇒ C ⊣ ∆`: Under input context `Γ`, applying a function of type `A`
+        /// to`e` synthesizes type `C`, with output context `∆`
         pub fn apply(&self, f: Type, term: Expr) -> Result<Type, crate::error::TypeError> {
             match f {
+                // Under the context `Γ`, `e` checks against type `A`, then under input context Γ,
+                // applying a function of type `(A -> C)` to `e` synthesizes type `C`,
+                // with output context ∆
+                // ```
+                //  Γ ⊢ e ⇐ A ⊣ ∆
+                // ────────────────────────── →App
+                //  Γ ⊢ (A → C) • e ⇒⇒ C ⊣ ∆
+                // ```
                 Type::Fun(box domain, box codomain) => {
-                    self.check(term, domain)?;
+                    self.check(term, domain)?; // e ⇐ A
 
                     Ok(codomain)
                 }
+
+                // Under the context `Γ`, `e` checks against type `A`, then under input context Γ,
+                // applying a function of type `(∀α. A)` to `e` synthesizes type `C`, replacing all
+                // it's free variables with a new type variable (hole references).
+                //
+                // Then, under the output context ∆, we can fill the holes with the type of `e`:
+                // ```
+                //  Γ,^α ⊢ [^α/α]A • e ⇒⇒ C ⊣ ∆
+                // ───────────────────────────── ∀App
+                //  Γ ⊢ (∀α.A) • e ⇒⇒ C ⊣ ∆
+                // ```
+                // This rules basically instantiates the forall, and then applies the type, the real
+                // rule the rule matching below this one.
                 Type::Forall(name, box type_repr) => {
                     self.apply(self.instantiate(&name, type_repr), term)
                 }
+
+                // Under the context `Γ`, `e` checks against type `^α1`, then under input context Γ,
+                // applying a function of type `^α` to `e` synthesizes type `^α2`, replacing all
+                // it's value with a new type variable, then:
+                //
+                // Under the context `Γ`, applying a function of type `^α` to `e` synthesizes type
+                // `^α2`, replacing all it's value with a new type variable, so:
+                // ```
+                //  Γ[^α2,^α1,^α=^α1 → ^α2] ⊢ e ⇐ ^α1 ⊣ ∆
+                // ─────────────────────────────────────── ^αApp
+                //  Γ [^α] ⊢ ^α • e ⇒⇒ ^α2 ⊣ ∆
+                // ```
                 Type::Hole(hole) => {
+                    // in this context the variable `hole` is equivalent to `^α`
                     match hole.value() {
                         Hole::Empty(scope) => {
                             let hole_a = HoleRef::new(Hole::Empty(scope));
                             let hole_b = HoleRef::new(Hole::Empty(scope));
 
+                            // ^α=^α1 → ^α2
                             hole.update(Type::Fun(
                                 /* domain   = */ Type::Hole(hole_a.clone()).into(),
                                 /* codomain = */ Type::Hole(hole_b.clone()).into(),
@@ -1041,9 +1118,19 @@ pub mod typer {
 
                             Ok(Type::Hole(hole_b))
                         }
+
+                        // If the hole is filled, we can apply the type to the expression,
+                        // there's a technique called `forcing`, that would be used here,
+                        // but it's good for now
+                        //
+                        // NOTE: Forcing is wrapping any filled hole before start checking,
+                        // then we can apply the type to the expression.
                         Hole::Filled(type_repr) => self.apply(type_repr.clone(), term),
                     }
                 }
+
+                // There's no rule for applying anything else to an expression, so then, we
+                // can return a type error saying that we expected a function type.
                 _ => Err(type_error!(
                     "Expected a function type, found {:?}",
                     f.debug(self)
