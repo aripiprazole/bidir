@@ -621,14 +621,14 @@ pub mod generalization {
 
                         // Updates the contents of the hole
                         // with the new type variable.
-                        *hole.value.borrow_mut() = Hole::Filled(Type::Variable(new_type_var));
+                        hole.update(Type::Variable(new_type_var));
                     }
                     Hole::Filled(mut type_repr) => {
                         generalize_over(ctx, quantifiers, &mut type_repr);
 
                         // Updates the contents of the hole
                         // with the new type generalized.
-                        *hole.value.borrow_mut() = Hole::Filled(type_repr);
+                        hole.update(type_repr);
                     }
                     _ => {}
                 }
@@ -695,12 +695,18 @@ pub mod unification {
 
                     // Updates the contents of the hole
                     // with the new type
-                    *self.value.borrow_mut() = Hole::Filled(sema);
+                    self.update(sema);
                 }
                 Hole::Filled(type_repr) => unify(ctx, sema, type_repr)?,
             }
 
             Ok(())
+        }
+
+        /// Updates without pre checking the hole.
+        #[inline(always)]
+        pub fn update(&self, value: Type) {
+            *self.value.borrow_mut() = Hole::Filled(value);
         }
     }
 
@@ -799,7 +805,7 @@ pub mod subsumption {
                 let hole_a = HoleRef::new(Hole::Empty(scope));
                 let hole_b = HoleRef::new(Hole::Empty(scope));
 
-                *hole.value.borrow_mut() = Hole::Filled(Type::Fun(
+                hole.update(Type::Fun(
                     /* domain   = */ Box::new(Type::Hole(hole_a.clone())),
                     /* codomain = */ Box::new(Type::Hole(hole_b.clone())),
                 ));
@@ -819,7 +825,7 @@ pub mod subsumption {
                 let hole_a = HoleRef::new(Hole::Empty(scope));
                 let hole_b = HoleRef::new(Hole::Empty(scope));
 
-                *hole.value.borrow_mut() = Hole::Filled(Type::Fun(
+                hole.update(Type::Fun(
                     /* domain   = */ Box::new(Type::Hole(hole_a.clone())),
                     /* codomain = */ Box::new(Type::Hole(hole_b.clone())),
                 ));
@@ -990,7 +996,7 @@ pub mod typer {
                             let hole_a = HoleRef::new(Hole::Empty(scope));
                             let hole_b = HoleRef::new(Hole::Empty(scope));
 
-                            *hole.value.borrow_mut() = Hole::Filled(Type::Fun(
+                            hole.update(Type::Fun(
                                 /* domain   = */ Box::new(Type::Hole(hole_a.clone())),
                                 /* codomain = */ Box::new(Type::Hole(hole_b.clone())),
                             ));
