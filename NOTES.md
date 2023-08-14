@@ -16,7 +16,11 @@ rust code with a handwritten parser, and some optimizations, like de bruijin lev
 
 ## Problems with the paper
 
-1. The paper uses a linked list, which is pretty slow to deal with in real world scenarios, and we should get rid of it.
+1. The paper uses an ordered context, which is pretty slow to deal with in real world scenarios, and we should get rid
+   of it.
+
+   This presupposes that we should use a list of tuples, which is pretty slow to deal with, and we should use a
+   different data structure, like a hashmap, which is pretty fast to deal with, and we can use the `im_rc` crate for
 
 2. Nominal typing, nominal typing makes harder to unify forall expression, and this tutorial presents an idea
    implementing [debruijin indexes and levels](https://en.wikipedia.org/wiki/De_Bruijn_sequence)
