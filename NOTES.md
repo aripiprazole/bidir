@@ -66,7 +66,7 @@ unify them.
 
 ## Higher-Rank Polymorphism
 
-Higher-Rank Polymorphism is a feature that allows us to write polymorphic functions, like the following:
+Higher-Rank Polymorphism is a feature that allows us to write polymorphic functions as arguments, like the following:
 
 ```haskell
 let id : ∀ 'a. 'a -> 'a = ... in
@@ -74,7 +74,20 @@ let f : (∀ 'a. 'a -> 'a) -> Int = ... in
 f id
 ```
 
-> Pseudo language example
+> Pseudo language example which we can pass a polymorphic function as argument
+
+This type of polymorphism is called "Rank-2 Polymorphism", because we are passing in a polymorphic function as argument,
+it's different from a naive hindley milner implementation, because we can't pass polymorphic functions as arguments in
+hindley milner, because it's not a higher-rank polymorphic type system:
+
+```haskell
+let id : ∀ 'a. 'a -> 'a = ... in
+let f : (∀ 'a. 'a -> 'a) -> Int = ... in
+f id
+```
+
+> The `let f` part is not valid in a naive hindley milner implementation, because we can't pass polymorphic functions as
+> arguments
 
 ## Unification and Subsumption
 
