@@ -784,19 +784,32 @@ pub mod subsumption {
 
     /// Performs the subtyping relation between two types.
     ///
-    ///
     /// # Parameters
     ///
     /// - `direction`: The direction of the subtyping relation. If it's checking or inferring
     /// the left or right side of the relation.
     fn sub_hole(ctx: &Context, hole: HoleRef, sema: Type, dir: Direction) -> Result<(), TypeError> {
         match (hole.value(), dir, sema) {
-            // Left rules
+            // SECTION: Left-side rules:
+            //   The left side rules are represented by `:=<` in the paper.
+            //
+            // Under the context `Γ`, instantiate `^α` type `∀a. A`, with output context `∆`:
+            // ```
+            //  Γ[^α],β ⊢ ^α :=< B ⊣ ∆,β,∆′
+            // ─────────────────────────────────────────────────────────────────── InstLAllR
+            //  Γ[^α] ⊢ ^α :=< (∀β.B) ⊣ ∆
+            // ```
             (Hole::Empty(_), Direction::Left, Type::Forall(name, box type_repr)) => {
                 let ctx = ctx.clone().create_new_type(name.clone());
 
                 sub_hole(&ctx, hole, type_repr, Direction::Left)?;
             }
+            // Under the context `Γ`, instantiate `^α` type `A1 -> A2`, with output context `∆`:
+            // ```
+            //  Γ[^α2,^α1,^α=^α1 → ^α2] ⊢ A1 =<: ^α1 ⊣ Θ    Θ ⊢ ^α2 :=< [Θ]A2 ⊣ ∆
+            // ─────────────────────────────────────────────────────────────────── InstLArr
+            //  Γ[^α] ⊢ ^α :=< A1 → A2 ⊣ ∆
+            // ```
             (Hole::Empty(scope), Direction::Left, Type::Fun(box domain, box codomain)) => {
                 let hole_a = HoleRef::new(Hole::Empty(scope));
                 let hole_b = HoleRef::new(Hole::Empty(scope));
@@ -806,17 +819,31 @@ pub mod subsumption {
                     /* codomain = */ Type::Hole(hole_b.clone()).into(),
                 ));
 
-                // Subtyping relation is contravariant on the domain
-                sub_hole(ctx, hole_a, domain, Direction::Right)?;
-                sub_hole(ctx, hole_b, codomain, Direction::Left)?;
+                // So we invert the direction of the subtyping relation
+                sub_hole(ctx, hole_a, domain, Direction::Right)?; // A1 =<: ^α1
+                sub_hole(ctx, hole_b, codomain, Direction::Left)?; // ^α2 :=< [Θ]A2
             }
 
-            // Right rules
+            // SECTION: Right-side rules:
+            //   The right side rules are represented by `=<:` in the paper.
+            //
+            // Under the context `Γ`, instantiate `^α` such that `A <: ^α`, with output context `∆`:
+            // ```
+            //  Γ[^α],➤^β,^β ⊢ [^β/β]B =<: ^α ⊣ ∆,➤^β,∆′
+            // ─────────────────────────────────────────────────────────────────── InstRAllL
+            //  Γ[^α] ⊢ (∀β.B) =<: ^α ⊣ ∆
+            // ```
             (Hole::Empty(_), Direction::Right, Type::Forall(name, box type_repr)) => {
                 let sema = ctx.instantiate(&name, type_repr);
 
                 sub_hole(ctx, hole, sema, Direction::Right)?;
             }
+            // Under the context `Γ`, instantiate `^α` such that `A <: ^α`, with output context `∆`:
+            // ```
+            //  Γ[^α2,^α1,^α=^α1 → ^α2] ⊢ A1 :=< ^α1 ⊣ Θ    Θ ⊢ ^α2 =<: [Θ]A2 ⊣ ∆
+            // ─────────────────────────────────────────────────────────────────── InstRArr
+            //  Γ[^α] ⊢ A1 → A2 =<: ^α ⊣ ∆
+            // ```
             (Hole::Empty(scope), Direction::Right, Type::Fun(box domain, box codomain)) => {
                 let hole_a = HoleRef::new(Hole::Empty(scope));
                 let hole_b = HoleRef::new(Hole::Empty(scope));
@@ -826,7 +853,6 @@ pub mod subsumption {
                     /* codomain = */ Type::Hole(hole_b.clone()).into(),
                 ));
 
-                // Subtyping relation is contravariant on the domain
                 sub_hole(ctx, hole_a, domain, Direction::Left)?;
                 sub_hole(ctx, hole_b, codomain, Direction::Right)?;
             }
@@ -834,7 +860,8 @@ pub mod subsumption {
             // For everything else, a <: b, only if a = b
             (Hole::Empty(_), _, sema) => hole.fill(ctx, sema)?,
 
-            // Tries to fill the hole with the type
+            // Tries to make a subsumption the hole's value with the semantic type
+            // `sema`.
             (Hole::Filled(type_repr), _, sema) => {
                 sub(ctx, type_repr, sema)?;
             }
@@ -846,23 +873,58 @@ pub mod subsumption {
     /// Performs the subtyping relation between two types.
     pub fn sub(ctx: &Context, sema_a: Type, sema_b: Type) -> Result<(), TypeError> {
         match (sema_a, sema_b) {
-            // Hole unification, attributing value
+            // Hole unification, attributing value, it does contains the following rules:
+            //
+            // ```
+            //  α ∌ FV(A)   Γ[^α] ⊢ ^α :=< A ⊣ ∆
+            // ────────────────────────────────── <:InstantiateL
+            //  Γ[^α] ⊢ ^α <: A ⊣ ∆
+            // ```
             (Type::Hole(hole), sema) => sub_hole(ctx, hole, sema, Direction::Left)?,
+            // ```
+            //  α ∌ FV(A)   Γ[^α] ⊢ A :=< ^α ⊣ ∆
+            // ────────────────────────────────── <:InstantiateR
+            //  Γ[^α] ⊢ A <: ^α ⊣ ∆
+            // ```
             (sema, Type::Hole(hole)) => sub_hole(ctx, hole, sema, Direction::Right)?,
 
-            // Forall subsumtipon
+            // Forall subsumtipons, that have the following rules:
+            //
+            // Under input context `Γ`, type `A` is a subtype of `B`, with output context `∆`:
+            // ```
+            //  Γ,➤^α,^α ⊢ [^α,α]A <: B ⊣ ∆,➤^α,Θ
+            // ──────────────────────────────────── <:∀L
+            //  Γ ⊢ (∀a. A) <: B ⊣ ∆
+            // ```
             (sema_a, Type::Forall(name, box type_repr)) => {
+                // The `➤` symbol means that we are elevating the context, so we can make
+                // the type variable "invariant" in the context.
+                //
+                // Being invariant means that we can't change the type variable's value in context
+                // that are not the same context, or contexts that are extending it's context.
                 let ctx = ctx.clone().create_new_type(name.clone());
 
                 sub(&ctx, sema_a, type_repr)?;
             }
+            //
+            // Under input context `Γ`, type `A` is a subtype of `B`, with output context `∆`:
+            // ```
+            //  Γ,α ⊢ A <: B ⊣ ∆,α,Θ
+            // ────────────────────── <:∀R
+            //  Γ ⊢ A <: (∀α. B) ⊣ ∆
+            // ```
             (Type::Forall(name, box type_repr), sema_b) => {
                 let sema_a = ctx.instantiate(&name, type_repr);
 
                 sub(ctx, sema_a, sema_b)?;
             }
 
-            // Function subsumption
+            // Function subsumption, its
+            // ```
+            //  Γ ⊢ B1 <: A1 ⊣ Θ   Θ ⊢ [Θ]A2 <: [Θ]B2 ⊣ ∆
+            // ─────────────────────────────────────────── <:→
+            //  Γ ⊢ A1 → A2 <: B1 → B2 ⊣ ∆
+            // ```
             (Type::Fun(box domain_a, box codomain_a), Type::Fun(box domain_b, box codomain_b)) => {
                 sub(ctx, domain_b, domain_a)?;
                 sub(ctx, codomain_a, codomain_b)?;
@@ -1037,7 +1099,6 @@ pub mod typer {
                 //
                 // Or with algorithmic typing rules:
                 // ```
-                //
                 //  Γ,^α,^β,x:^α ⊢ e ⇐ ^β ⊣ ∆,x:^α,Θ
                 // ────────────────────────────────── →I⇒
                 //  Γ ⊢ (λx.e) ⇒ ^α → ^β ⊣ ∆
@@ -1055,7 +1116,7 @@ pub mod typer {
         /// Applies the type of an expression to another expression.
         ///
         /// It has a weird symbol in "Complete and Easy":
-        /// 
+        ///
         /// - `Γ ⊢ A • e ⇒⇒ C ⊣ ∆`: Under input context `Γ`, applying a function of type `A`
         /// to`e` synthesizes type `C`, with output context `∆`
         pub fn apply(&self, f: Type, term: Expr) -> Result<Type, crate::error::TypeError> {
