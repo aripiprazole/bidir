@@ -2,7 +2,7 @@
 
 The main goal of this article is making some comments about mb64 implementation of
 the [Complete and Easy.. paper](bidir.pdf), but implementing it in pure
-rust code with a handwritten parser, and some optimizations, like de bruijin levels and indexes!
+rust code with some optimizations, like de bruijin levels and indexes!
 
 ## Credits
 
